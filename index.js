@@ -112,6 +112,15 @@ module.exports = {
         this.log("deployed index.html under " + key);
       },
 
+      willActivate: function(context) {
+        return this._current(context).then(function(current) {
+          if(!context.revisionData) {
+            context.revisionData = {};
+          }
+          context.revisionData.previousRevisionKey = current;
+        });
+      },
+      
       activate: function(context) {
         var client = this._createClient();
         var key = this._key(context);
@@ -145,6 +154,11 @@ module.exports = {
 
             resolve();
           });
+        }).then(function() {
+          if(!context.revisionData) {
+            context.revisionData = {};
+          }
+          context.revisionData.activatedRevisionKey = key;
         });
       },
       didActivate: function(context) {
