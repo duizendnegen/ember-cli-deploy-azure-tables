@@ -151,8 +151,6 @@ module.exports = {
                 reject(error);
               }
             });
-
-            resolve();
           });
         }).then(function() {
           if(!context.revisionData) {
