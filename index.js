@@ -130,7 +130,7 @@ module.exports = {
           context.revisionData.previousRevisionKey = current;
         });
       },
-      
+
       activate: function(context) {
         var client = this._createClient();
         var key = this._key(context);
@@ -219,29 +219,42 @@ module.exports = {
                         .where('PartitionKey eq ?', AZURE_MANIFEST_TAG)
                         .and('RowKey ne ?', this._currentKey(context));
 
-                // find the list of uploaded revisions
-                client.queryEntities(AZURE_TABLE_NAME, query, null, function(error, result, response) {
-                  if(!error) {
-                    var sortedEntries = result.entries;
-                    sortedEntries.sort(function(a, b) {
-                      return new Date(b["Timestamp"]["_"]).getTime() - new Date(a["Timestamp"]["_"]).getTime();
-                    });
-
-                    var entries = sortedEntries.map(function(entry) {
-                      var revision = entry["RowKey"]["_"];
-                      return { revision: revision, timestamp: new Date(entry["Timestamp"]["_"]).getTime(), active: current === revision };
-                    });
-
-                    resolve(entries);
-                  } else {
-                    reject(error);
-                  }
-                });
+                this._query(client, null, query, [], resolve, reject, current);
               } else {
                 reject(error);
               }
             }.bind(this));
           }.bind(this));
+        }.bind(this));
+      },
+      _query: function(client, continuationToken, query, entries, resolve, reject, current) {
+        client.queryEntities(AZURE_TABLE_NAME, query, continuationToken, function(error, result, response) {
+          if(!error) {
+            for(var i = 0, len = result.entries.length; i < len; ++i) {
+              entries.push(result.entries[i]);
+            }
+
+            continuationToken = result.continuationToken;
+
+            if(!continuationToken) {
+              var sortedEntries = entries;
+
+              sortedEntries.sort(function(a, b) {
+                return new Date(b["Timestamp"]["_"]).getTime() - new Date(a["Timestamp"]["_"]).getTime();
+              });
+
+              var mappedEntries = sortedEntries.map(function(entry) {
+                var revision = entry["RowKey"]["_"];
+                return { revision: revision, timestamp: new Date(entry["Timestamp"]["_"]).getTime(), active: current === revision };
+              });
+
+              resolve(mappedEntries);
+            } else {
+              this._query(client, continuationToken, query, entries, resolve, reject, current);
+            }
+          } else {
+            reject(error);
+          }
         }.bind(this));
       }
     });
