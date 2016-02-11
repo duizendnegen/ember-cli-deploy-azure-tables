@@ -49,10 +49,20 @@ module.exports = {
         }
       },
 
+      fetchInitialRevisions: function(context) {
+        return this._list(context).then(function(revisions) {
+          return {
+            initialRevisions: revisions
+          };
+        });
+      },
+
       fetchRevisions: function(context) {
-        return this._list(context).then(function(list) {
-          context.revisions = list;
-        }.bind(this));
+        return this._list(context).then(function(revisions) {
+          return {
+            revisions: revisions
+          };
+        });
       },
 
       upload: function(context) {
