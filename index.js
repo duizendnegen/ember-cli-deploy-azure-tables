@@ -27,6 +27,8 @@ module.exports = {
         var storageAccount = this.readConfig("storageAccount");
         var storageAccessKey = this.readConfig("storageAccessKey");
 
+        AZURE_TABLE_NAME = this.readConfig("tableName") || AZURE_TABLE_NAME;
+
         if(connectionString) {
           return azure.createTableService(connectionString);
         } else if(storageAccount && storageAccessKey) {
