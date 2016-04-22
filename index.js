@@ -11,7 +11,6 @@ var path              = require('path');
 var denodeify         = require('rsvp').denodeify;
 var readFile          = denodeify(fs.readFile);
 
-var DEFAULT_MANIFEST_SIZE   = 10;
 var AZURE_TABLE_NAME        = 'emberdeploy';
 var AZURE_MANIFEST_TAG      = 'manifest';
 
@@ -22,12 +21,15 @@ module.exports = {
     var DeployPlugin = DeployPluginBase.extend({
       name: options.name,
 
+      defaultConfig: {
+          tableName: AZURE_TABLE_NAME,
+          manifestTag: AZURE_MANIFEST_TAG
+      },
+
       _createClient: function() {
         var connectionString = this.readConfig("connectionString");
         var storageAccount = this.readConfig("storageAccount");
         var storageAccessKey = this.readConfig("storageAccessKey");
-
-        AZURE_TABLE_NAME = this.readConfig("tableName") || AZURE_TABLE_NAME;
 
         if(connectionString) {
           return azure.createTableService(connectionString);
@@ -49,6 +51,8 @@ module.exports = {
         if(!this.pluginConfig.connectionString) {
           ['storageAccount', 'storageAccessKey'].forEach(this.ensureConfigPropertySet.bind(this));
         }
+
+        ['tableName', 'manifestTag', 'manifestSize'].forEach(this.applyDefaultConfigProperty.bind(this));
       },
 
       fetchInitialRevisions: function(context) {
@@ -72,6 +76,9 @@ module.exports = {
         var client = this._createClient();
         var key = this._key(context);
 
+        var tableName = this.readConfig('tableName');
+        var manifestTag = this.readConfig('manifestTag');
+
         this.log('deploying index.html to Azure Tables...');
 
         return readFile(path.join(context.distDir, "index.html"))
@@ -80,14 +87,14 @@ module.exports = {
       	}).then(function(indexContents) {
           return new Promise(function(resolve, reject) {
             // create table if not already existent
-            client.createTableIfNotExists(AZURE_TABLE_NAME, function(error, result, response) {
+            client.createTableIfNotExists(tableName, function(error, result, response) {
               if(!error){
                 var query = new azure.TableQuery()
-                        .where('PartitionKey eq ?', AZURE_MANIFEST_TAG)
+                        .where('PartitionKey eq ?', manifestTag)
                         .and('RowKey eq ?', key);
 
                 // find the list of uploaded revisions
-                client.queryEntities(AZURE_TABLE_NAME, query, null, function(error, result, response) {
+                client.queryEntities(tableName, query, null, function(error, result, response) {
                   if(!error){
                     // has this key already been uploaded once?
                     if(result.entries.length > 0) {
@@ -95,11 +102,11 @@ module.exports = {
                     } else {
                       var entGen = azure.TableUtilities.entityGenerator;
                       var entity = {};
-                      entity["PartitionKey"] = entGen.String(AZURE_MANIFEST_TAG);
+                      entity["PartitionKey"] = entGen.String(manifestTag);
                       entity["RowKey"] = entGen.String(key);
                       entity["content"] = entGen.String(indexContents);
 
-                      client.insertEntity(AZURE_TABLE_NAME, entity,  function (error, result, response) {
+                      client.insertEntity(tableName, entity,  function (error, result, response) {
                         if(!error){
                           resolve(result);
                         } else {
@@ -138,6 +145,9 @@ module.exports = {
         var key = this._key(context);
         var _this = this;
 
+        var tableName = this.readConfig('tableName');
+        var manifestTag = this.readConfig('manifestTag');
+
         return new Promise(function(resolve, reject) {
           _this._list(context).then(function(existingEntries) {
             if(existingEntries.some(function(entry) {
@@ -152,11 +162,11 @@ module.exports = {
           .then(function() {
             var entGen = azure.TableUtilities.entityGenerator;
             var entity = {};
-            entity["PartitionKey"] = entGen.String(AZURE_MANIFEST_TAG);
+            entity["PartitionKey"] = entGen.String(manifestTag);
             entity["RowKey"] = entGen.String(context.project.name() + ":current");
             entity["content"] = entGen.String(key);
 
-            client.insertOrReplaceEntity(AZURE_TABLE_NAME, entity,  function (error, result, response) {
+            client.insertOrReplaceEntity(tableName, entity,  function (error, result, response) {
               if(!error){
                 resolve(result);
               } else {
@@ -182,17 +192,20 @@ module.exports = {
       _current: function(context) {
         var client = this._createClient();
 
+        var tableName = this.readConfig('tableName');
+        var manifestTag = this.readConfig('manifestTag');
+
         return new Promise(function(resolve, reject) {
           // create table if not already existent
-          client.createTableIfNotExists(AZURE_TABLE_NAME, function(error, result, response) {
+          client.createTableIfNotExists(tableName, function(error, result, response) {
             if(!error){
               // find the current tag
               var query = new azure.TableQuery()
-                      .where('PartitionKey eq ?', AZURE_MANIFEST_TAG)
+                      .where('PartitionKey eq ?', manifestTag)
                       .and('RowKey eq ?', this._currentKey(context));
 
               // find the list of uploaded revisions
-              client.queryEntities(AZURE_TABLE_NAME, query, null, function(error, result, response) {
+              client.queryEntities(tableName, query, null, function(error, result, response) {
                 if(!error){
                   if(result && result.entries.length > 0) {
                     resolve(result.entries[0]["content"]["_"]);
@@ -212,13 +225,16 @@ module.exports = {
       _list: function(context) {
         var client = this._createClient();
 
+        var tableName = this.readConfig('tableName');
+        var manifestTag = this.readConfig('manifestTag');
+
         return this._current(context).then(function(current) {
           return new Promise(function(resolve, reject) {
             // create table if not already existent
-            client.createTableIfNotExists(AZURE_TABLE_NAME, function(error, result, response) {
+            client.createTableIfNotExists(tableName, function(error, result, response) {
               if(!error){
                 var query = new azure.TableQuery()
-                        .where('PartitionKey eq ?', AZURE_MANIFEST_TAG)
+                        .where('PartitionKey eq ?', manifestTag)
                         .and('RowKey ne ?', this._currentKey(context));
 
                 this._query(client, null, query, [], resolve, reject, current);
@@ -230,7 +246,10 @@ module.exports = {
         }.bind(this));
       },
       _query: function(client, continuationToken, query, entries, resolve, reject, current) {
-        client.queryEntities(AZURE_TABLE_NAME, query, continuationToken, function(error, result, response) {
+        var tableName = this.readConfig('tableName');
+        var manifestTag = this.readConfig('manifestTag');
+
+        client.queryEntities(tableName, query, continuationToken, function(error, result, response) {
           if(!error) {
             for(var i = 0, len = result.entries.length; i < len; ++i) {
               entries.push(result.entries[i]);
