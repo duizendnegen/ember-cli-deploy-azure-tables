@@ -22,7 +22,8 @@ module.exports = function(environment) {
   if (environment === 'production') {
     ENV["azure-tables"] = {
       storageAccount: "my-storage-account",
-      storageAccessKey: "my-access-key"
+      storageAccessKey: "my-access-key",
+      tableName: "mytable" // defaults to 'emberdeploy'
     };
   }
 
