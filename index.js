@@ -7,6 +7,7 @@ var Promise           = require('rsvp').Promise;
 
 var fs                = require('fs');
 var path              = require('path');
+var zlib              = require('zlib');
 
 var denodeify         = require('rsvp').denodeify;
 var readFile          = denodeify(fs.readFile);
@@ -34,7 +35,8 @@ module.exports = {
 
       defaultConfig: {
           tableName: AZURE_TABLE_NAME,
-          manifestTag: AZURE_MANIFEST_TAG
+          manifestTag: AZURE_MANIFEST_TAG,
+          compressIndex: false
       },
 
       _createClient: function() {
@@ -72,7 +74,7 @@ module.exports = {
           ['storageAccount', 'storageAccessKey'].forEach(this.ensureConfigPropertySet.bind(this));
         }
 
-        ['tableName', 'manifestTag', 'manifestSize'].forEach(this.applyDefaultConfigProperty.bind(this));
+        ['compressIndex', 'tableName', 'manifestTag', 'manifestSize'].forEach(this.applyDefaultConfigProperty.bind(this));
 
         // assert project name is valid
         this._projectName(context);
@@ -101,13 +103,25 @@ module.exports = {
 
         var tableName = this.readConfig('tableName');
         var manifestTag = this.readConfig('manifestTag');
+        var compressIndex = self.readConfig('compressIndex')
+
+        var fullPath = path.join(context.distDir, "index.html");
 
         this.log('deploying index.html to Azure Tables...');
 
-        return readFile(path.join(context.distDir, "index.html"))
-      	.then(function(buffer) {
-      		return buffer.toString();
-      	}).then(function(indexContents) {
+        var promise = readFile(path.join(context.distDir, "index.html"))
+            .then(function(buffer) {
+              return buffer.toString();
+            })
+
+        if (compressIndex) {
+          this.log('compressing index.html with gzip', { verbose: true });
+          promise = promise.then(function (indexContents) {
+            return zlib.gzipSync(indexContents);
+          })
+        }
+
+        return promise.then(function(indexContents) {
           return new Promise(function(resolve, reject) {
             // create table if not already existent
             client.createTableIfNotExists(tableName, function(error, result, response) {
@@ -127,7 +141,17 @@ module.exports = {
                       var entity = {};
                       entity["PartitionKey"] = entGen.String(manifestTag);
                       entity["RowKey"] = entGen.String(key);
-                      entity["content"] = entGen.String(indexContents);
+                      if(compressIndex)  {
+                        entity["content"] = entGen.Binary(indexContents);
+                        entity["compression"] = entGen.String(compressIndex ? "gzip" : null);
+                      } else {
+                        entity["content"] = entGen.String(indexContents);
+                      }
+                      self.log("storing in table: " + tableName
+                               + "  partitionkey: " + manifestTag
+                               + ", rowkey:" + key
+                               + ", contents with length: " + indexContents.length
+                               + ", gzipped: " + (compressIndex ? 'yes' : 'no'), { verbose: true })
 
                       client.insertEntity(tableName, entity,  function (error, result, response) {
                         if(!error){
