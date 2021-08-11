@@ -14,6 +14,17 @@ var readFile          = denodeify(fs.readFile);
 var AZURE_TABLE_NAME        = 'emberdeploy';
 var AZURE_MANIFEST_TAG      = 'manifest';
 
+// source: https://docs.microsoft.com/en-us/rest/api/storageservices/Understanding-the-Table-Service-Data-Model?redirectedfrom=MSDN#characters-disallowed-in-key-fields
+var AZURE_DISALLOWED_VALUES = [
+  '/',
+  '\\',
+  '#',
+  '?',
+  '\t',
+  '\n',
+  '\r'
+];
+
 module.exports = {
   name: 'ember-cli-deploy-azure-tables',
 
@@ -42,7 +53,16 @@ module.exports = {
 
       _key: function(context) {
         var revisionKey = context.commandOptions.revision || context.revisionData.revisionKey.substr(0, 8);
-        return context.project.name() + ':' + revisionKey;
+        return this._projectName(context) + ':' + revisionKey;
+      },
+
+      _projectName: function(context) {
+        var name = this.readConfig("projectName") || context.project.name();
+        var containedChars = AZURE_DISALLOWED_VALUES.filter(v => name.includes(v));
+        if(containedChars.length > 0)
+          throw new Error('Project name contains invalid characters not supported by Azure Tables: ('
+            + containedChars.join(', ') + '). Use the projectName configuration value to override the name.');
+        return name;
       },
 
       configure: function(context) {
@@ -53,6 +73,9 @@ module.exports = {
         }
 
         ['tableName', 'manifestTag', 'manifestSize'].forEach(this.applyDefaultConfigProperty.bind(this));
+
+        // assert project name is valid
+        this._projectName(context);
       },
 
       fetchInitialRevisions: function(context) {
@@ -143,6 +166,7 @@ module.exports = {
       activate: function(context) {
         var client = this._createClient();
         var key = this._key(context);
+        var projectName = this._projectName(context);
         var _this = this;
 
         var tableName = this.readConfig('tableName');
@@ -163,7 +187,7 @@ module.exports = {
             var entGen = azure.TableUtilities.entityGenerator;
             var entity = {};
             entity["PartitionKey"] = entGen.String(manifestTag);
-            entity["RowKey"] = entGen.String(context.project.name() + ":current");
+            entity["RowKey"] = entGen.String(projectName + ":current");
             entity["content"] = entGen.String(key);
 
             client.insertOrReplaceEntity(tableName, entity,  function (error, result, response) {
@@ -187,7 +211,7 @@ module.exports = {
         this.log("Activated revision " + key);
       },
       _currentKey: function(context) {
-        return context.project.name() + ':current';
+        return this._projectName(context) + ':current';
       },
       _current: function(context) {
         var client = this._createClient();
