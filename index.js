@@ -7,12 +7,24 @@ var Promise           = require('rsvp').Promise;
 
 var fs                = require('fs');
 var path              = require('path');
+var zlib              = require('zlib');
 
 var denodeify         = require('rsvp').denodeify;
 var readFile          = denodeify(fs.readFile);
 
 var AZURE_TABLE_NAME        = 'emberdeploy';
 var AZURE_MANIFEST_TAG      = 'manifest';
+
+// source: https://docs.microsoft.com/en-us/rest/api/storageservices/Understanding-the-Table-Service-Data-Model?redirectedfrom=MSDN#characters-disallowed-in-key-fields
+var AZURE_DISALLOWED_VALUES = [
+  '/',
+  '\\',
+  '#',
+  '?',
+  '\t',
+  '\n',
+  '\r'
+];
 
 module.exports = {
   name: 'ember-cli-deploy-azure-tables',
@@ -23,7 +35,8 @@ module.exports = {
 
       defaultConfig: {
           tableName: AZURE_TABLE_NAME,
-          manifestTag: AZURE_MANIFEST_TAG
+          manifestTag: AZURE_MANIFEST_TAG,
+          compressIndex: false
       },
 
       _createClient: function() {
@@ -42,7 +55,16 @@ module.exports = {
 
       _key: function(context) {
         var revisionKey = context.commandOptions.revision || context.revisionData.revisionKey.substr(0, 8);
-        return context.project.name() + ':' + revisionKey;
+        return this._projectName(context) + ':' + revisionKey;
+      },
+
+      _projectName: function(context) {
+        var name = this.readConfig("projectName") || context.project.name();
+        var containedChars = AZURE_DISALLOWED_VALUES.filter(v => name.includes(v));
+        if(containedChars.length > 0)
+          throw new Error('Project name contains invalid characters not supported by Azure Tables: ('
+            + containedChars.join(', ') + '). Use the projectName configuration value to override the name.');
+        return name;
       },
 
       configure: function(context) {
@@ -52,7 +74,10 @@ module.exports = {
           ['storageAccount', 'storageAccessKey'].forEach(this.ensureConfigPropertySet.bind(this));
         }
 
-        ['tableName', 'manifestTag', 'manifestSize'].forEach(this.applyDefaultConfigProperty.bind(this));
+        ['compressIndex', 'tableName', 'manifestTag', 'manifestSize'].forEach(this.applyDefaultConfigProperty.bind(this));
+
+        // assert project name is valid
+        this._projectName(context);
       },
 
       fetchInitialRevisions: function(context) {
@@ -78,13 +103,25 @@ module.exports = {
 
         var tableName = this.readConfig('tableName');
         var manifestTag = this.readConfig('manifestTag');
+        var compressIndex = self.readConfig('compressIndex')
+
+        var fullPath = path.join(context.distDir, "index.html");
 
         this.log('deploying index.html to Azure Tables...');
 
-        return readFile(path.join(context.distDir, "index.html"))
-      	.then(function(buffer) {
-      		return buffer.toString();
-      	}).then(function(indexContents) {
+        var promise = readFile(path.join(context.distDir, "index.html"))
+            .then(function(buffer) {
+              return buffer.toString();
+            })
+
+        if (compressIndex) {
+          this.log('compressing index.html with gzip', { verbose: true });
+          promise = promise.then(function (indexContents) {
+            return zlib.gzipSync(indexContents);
+          })
+        }
+
+        return promise.then(function(indexContents) {
           return new Promise(function(resolve, reject) {
             // create table if not already existent
             client.createTableIfNotExists(tableName, function(error, result, response) {
@@ -104,7 +141,17 @@ module.exports = {
                       var entity = {};
                       entity["PartitionKey"] = entGen.String(manifestTag);
                       entity["RowKey"] = entGen.String(key);
-                      entity["content"] = entGen.String(indexContents);
+                      if(compressIndex)  {
+                        entity["content"] = entGen.Binary(indexContents);
+                        entity["compression"] = entGen.String(compressIndex ? "gzip" : null);
+                      } else {
+                        entity["content"] = entGen.String(indexContents);
+                      }
+                      self.log("storing in table: " + tableName
+                               + "  partitionkey: " + manifestTag
+                               + ", rowkey:" + key
+                               + ", contents with length: " + indexContents.length
+                               + ", gzipped: " + (compressIndex ? 'yes' : 'no'), { verbose: true })
 
                       client.insertEntity(tableName, entity,  function (error, result, response) {
                         if(!error){
@@ -143,6 +190,7 @@ module.exports = {
       activate: function(context) {
         var client = this._createClient();
         var key = this._key(context);
+        var projectName = this._projectName(context);
         var _this = this;
 
         var tableName = this.readConfig('tableName');
@@ -163,7 +211,7 @@ module.exports = {
             var entGen = azure.TableUtilities.entityGenerator;
             var entity = {};
             entity["PartitionKey"] = entGen.String(manifestTag);
-            entity["RowKey"] = entGen.String(context.project.name() + ":current");
+            entity["RowKey"] = entGen.String(projectName + ":current");
             entity["content"] = entGen.String(key);
 
             client.insertOrReplaceEntity(tableName, entity,  function (error, result, response) {
@@ -187,7 +235,7 @@ module.exports = {
         this.log("Activated revision " + key);
       },
       _currentKey: function(context) {
-        return context.project.name() + ':current';
+        return this._projectName(context) + ':current';
       },
       _current: function(context) {
         var client = this._createClient();
